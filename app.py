@@ -4,36 +4,53 @@ import shutil
 import hashlib
 import numpy as np
 import pandas as pd
+import tempfile
 from PyPDF2 import PdfReader
 from sentence_transformers import SentenceTransformer
+from docx import Document
+from pptx import Presentation
+from PIL import Image
 
 # ----------------------------
 # Functions
 # ----------------------------
-def get_file_text(file_path):
-    """Extract text from supported files; fallback None for others."""
+def get_file_text(file):
+    """Extract text for supported file types"""
     try:
-        if file_path.endswith(".pdf"):
-            reader = PdfReader(file_path)
-            text = ""
-            for page in reader.pages:
-                text += page.extract_text() or ""
-            return " ".join(text.split())
-        elif file_path.endswith(".txt"):
-            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                return " ".join(f.read().split())
+        if file.name.endswith(".pdf"):
+            reader = PdfReader(file)
+            text = "".join(page.extract_text() or "" for page in reader.pages)
+            return text
+        elif file.name.endswith((".txt", ".csv", ".log")):
+            return file.read().decode("utf-8", errors="ignore")
+        elif file.name.endswith(".docx"):
+            doc = Document(file)
+            return "\n".join(p.text for p in doc.paragraphs)
+        elif file.name.endswith((".xlsx", ".xls")):
+            df = pd.read_excel(file)
+            return df.head().to_string()
+        elif file.name.endswith(".pptx"):
+            prs = Presentation(file)
+            slides_text = []
+            for slide in prs.slides:
+                for shape in slide.shapes:
+                    if hasattr(shape, "text"):
+                        slides_text.append(shape.text)
+            return "\n".join(slides_text)
+        elif file.name.endswith((".png", ".jpg", ".jpeg", ".gif")):
+            return None  # handled as image preview
         else:
             return None
     except:
         return None
 
-def file_hash(file_path):
-    """Compute MD5 hash for exact duplicate detection"""
+def file_hash(file):
     hasher = hashlib.md5()
     try:
-        with open(file_path, "rb") as f:
-            buf = f.read()
-            hasher.update(buf)
+        file.seek(0)
+        buf = file.read()
+        file.seek(0)
+        hasher.update(buf)
         return hasher.hexdigest()
     except:
         return None
@@ -43,35 +60,34 @@ def similarity(vec1, vec2):
         return 0
     return np.dot(vec1, vec2) / (np.linalg.norm(vec1) * np.linalg.norm(vec2))
 
-def group_similar_files(file_paths, embeddings, threshold=0.5):
+def group_similar_files(file_list, embeddings, threshold=0.5):
     groups = []
     visited = set()
-    for i in range(len(file_paths)):
-        if file_paths[i] in visited:
+    for i in range(len(file_list)):
+        if file_list[i].name in visited:
             continue
-        group = [file_paths[i]]
-        visited.add(file_paths[i])
-        for j in range(i+1, len(file_paths)):
-            if file_paths[j] in visited:
+        group = [file_list[i]]
+        visited.add(file_list[i].name)
+        for j in range(i + 1, len(file_list)):
+            if file_list[j].name in visited:
                 continue
-            score = similarity(embeddings[file_paths[i]], embeddings[file_paths[j]])
+            score = similarity(embeddings[file_list[i].name], embeddings[file_list[j].name])
             if score >= threshold:
-                group.append(file_paths[j])
-                visited.add(file_paths[j])
+                group.append(file_list[j])
+                visited.add(file_list[j].name)
         if len(group) > 1:
             groups.append(group)
     return groups
 
-def auto_rename(file_path, folder_path):
-    base, ext = os.path.splitext(os.path.basename(file_path))
+def auto_rename(temp_folder, file_name):
+    base, ext = os.path.splitext(file_name)
     counter = 1
     new_name = f"{base}_duplicate{counter}{ext}"
-    new_path = os.path.join(folder_path, new_name)
+    new_path = os.path.join(temp_folder, new_name)
     while os.path.exists(new_path):
         counter += 1
         new_name = f"{base}_duplicate{counter}{ext}"
-        new_path = os.path.join(folder_path, new_name)
-    shutil.move(file_path, new_path)
+        new_path = os.path.join(temp_folder, new_name)
     return new_path
 
 # ----------------------------
@@ -86,11 +102,15 @@ model = load_model()
 # ----------------------------
 # Streamlit UI
 # ----------------------------
-st.title("📁 Universal File Duplicate & Similarity Manager")
+st.title("📁 Universal File Duplicate & Similarity Cleaner")
 
-folder_path = st.text_input("Enter folder path to scan:")
+uploaded_files = st.file_uploader(
+    "Upload or drag-and-drop files (multiple allowed)",
+    type=None,
+    accept_multiple_files=True
+)
 
-threshold = st.slider("Similarity threshold (text files only)", 0.0, 1.0, 0.5, 0.01)
+threshold = st.slider("Similarity threshold (text-based files)", 0.0, 1.0, 0.5, 0.01)
 
 cleanup_mode = st.radio(
     "Duplicate handling mode",
@@ -100,10 +120,18 @@ cleanup_mode = st.radio(
     ]
 )
 
-if folder_path and os.path.exists(folder_path):
-    st.write(f"Scanning folder: `{folder_path}`")
+if uploaded_files:
+    st.write(f"{len(uploaded_files)} files uploaded")
     
-    file_paths = [os.path.join(folder_path, f) for f in os.listdir(folder_path) if os.path.isfile(os.path.join(folder_path, f))]
+    temp_folder = tempfile.mkdtemp()
+    file_paths = []
+    
+    # Save uploaded files to temp folder
+    for file in uploaded_files:
+        path = os.path.join(temp_folder, file.name)
+        with open(path, "wb") as f:
+            f.write(file.read())
+        file_paths.append(path)
     
     texts = {}
     embeddings = {}
@@ -111,35 +139,38 @@ if folder_path and os.path.exists(folder_path):
     exact_duplicates = []
     
     # Process files
-    for path in file_paths:
-        # Hash for exact duplicates
-        h = file_hash(path)
+    for file_path in file_paths:
+        file = open(file_path, "rb")
+        # Exact duplicates via hash
+        h = file_hash(file)
         if h:
             if h in hashes:
-                exact_duplicates.append((hashes[h], path))
+                exact_duplicates.append((hashes[h], file_path))
             else:
-                hashes[h] = path
+                hashes[h] = file_path
         
-        # Text extraction
-        text = get_file_text(path)
+        # Text-based embeddings
+        file.seek(0)
+        text = get_file_text(file)
         if text:
-            texts[path] = text
-            embeddings[path] = model.encode(text)
+            texts[file_path] = text
+            embeddings[file_path] = model.encode(text)
     
     # Show exact duplicates
-    st.subheader("🔴 Exact Duplicates (hash match)")
+    st.subheader("🔴 Exact Duplicates")
     if exact_duplicates:
         for a, b in exact_duplicates:
-            st.write(f"📄 {a}")
-            st.write(f"📄 {b}")
+            st.write(f"📄 {os.path.basename(a)}")
+            st.write(f"📄 {os.path.basename(b)}")
             st.write("---")
     else:
         st.write("No exact duplicates found.")
     
     # Group similar text files
     if embeddings:
-        st.subheader("🟡 Similar Text Files (semantic similarity)")
-        groups = group_similar_files(list(embeddings.keys()), embeddings, threshold)
+        st.subheader("🟡 Similar Text Files")
+        file_objects = [open(p, "rb") for p in file_paths]
+        groups = group_similar_files(file_objects, embeddings, threshold)
         
         if not groups:
             st.write("No similar text file groups found above threshold.")
@@ -149,50 +180,56 @@ if folder_path and os.path.exists(folder_path):
                 st.write(f"### Group {idx+1}")
                 keep_file = st.selectbox(
                     "Select file to keep (others handled automatically)",
-                    options=group,
+                    options=[os.path.basename(f.name) for f in group],
                     key=f"keep-{idx}"
                 )
                 decisions[idx] = {"keep": keep_file, "group": group}
-                for jdx, path in enumerate(group):
-                    with st.expander(f"Preview: {os.path.basename(path)}"):
-                        st.text_area("Preview", texts[path], height=150, key=f"preview-{idx}-{jdx}")
-            
+                for jdx, f in enumerate(group):
+                    text = texts.get(f.name)
+                    if text:
+                        with st.expander(f"Preview: {f.name}"):
+                            st.text_area("Preview", text, height=150, key=f"preview-{idx}-{jdx}")
+                    elif f.name.lower().endswith((".png", ".jpg", ".jpeg", ".gif")):
+                        with st.expander(f"Image Preview: {f.name}"):
+                            img = Image.open(f)
+                            st.image(img, use_column_width=True)
+                    else:
+                        st.write(f"📄 {f.name} (Preview not available)")
+
             # Cleanup button
-            if st.button("Run Automatic Cleanup"):
+            if st.button("Run Cleanup"):
+                archive_folder = os.path.join(temp_folder, "_duplicates")
+                os.makedirs(archive_folder, exist_ok=True)
                 moved_files = []
                 
-                # Handle exact duplicates
+                # Exact duplicates
                 for a, b in exact_duplicates:
                     for f in [a, b]:
                         if cleanup_mode == "Move duplicates to _duplicates folder":
-                            archive_folder = os.path.join(folder_path, "_duplicates")
-                            os.makedirs(archive_folder, exist_ok=True)
                             dst = os.path.join(archive_folder, os.path.basename(f))
-                            if os.path.exists(f):
-                                shutil.move(f, dst)
-                                moved_files.append({"Moved": f, "To": dst})
-                        else:  # Auto-rename
-                            new_path = auto_rename(f, folder_path)
-                            moved_files.append({"Renamed": f, "To": new_path})
+                            shutil.move(f, dst)
+                            moved_files.append({"Moved": os.path.basename(f), "To": dst})
+                        else:
+                            new_path = auto_rename(temp_folder, os.path.basename(f))
+                            shutil.move(f, new_path)
+                            moved_files.append({"Renamed": os.path.basename(f), "To": new_path})
                 
-                # Handle semantic duplicates
+                # Semantic duplicates
                 for decision in decisions.values():
                     keep = decision["keep"]
                     for f in decision["group"]:
-                        if f != keep:
+                        if f.name != keep:
                             if cleanup_mode == "Move duplicates to _duplicates folder":
-                                archive_folder = os.path.join(folder_path, "_duplicates")
-                                os.makedirs(archive_folder, exist_ok=True)
-                                dst = os.path.join(archive_folder, os.path.basename(f))
-                                if os.path.exists(f):
-                                    shutil.move(f, dst)
-                                    moved_files.append({"Moved": f, "To": dst})
+                                dst = os.path.join(archive_folder, os.path.basename(f.name))
+                                shutil.move(f.name, dst)
+                                moved_files.append({"Moved": os.path.basename(f.name), "To": dst})
                             else:
-                                new_path = auto_rename(f, folder_path)
-                                moved_files.append({"Renamed": f, "To": new_path})
+                                new_path = auto_rename(temp_folder, os.path.basename(f.name))
+                                shutil.move(f.name, new_path)
+                                moved_files.append({"Renamed": os.path.basename(f.name), "To": new_path})
                 
                 if moved_files:
-                    st.success(f"Processed {len(moved_files)} duplicate files!")
+                    st.success(f"Processed {len(moved_files)} files!")
                     st.dataframe(pd.DataFrame(moved_files))
                 else:
                     st.info("No files needed processing.")
