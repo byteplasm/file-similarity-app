@@ -10,22 +10,17 @@ from sentence_transformers import SentenceTransformer
 # Functions
 # ----------------------------
 def get_text(file):
-    """
-    Extract text from uploaded PDF or TXT file.
-    """
+    """Extract text from uploaded PDF or TXT file."""
     if file.name.endswith(".pdf"):
         reader = PdfReader(file)
         text = ""
         for page in reader.pages:
             text += page.extract_text() or ""
-        return " ".join(text.split())  # normalize whitespace
-
+        return " ".join(text.split())
     elif file.name.endswith(".txt"):
         text = file.read().decode("utf-8", errors="ignore")
-        return " ".join(text.split())  # normalize whitespace
-
+        return " ".join(text.split())
     return ""
-
 
 def similarity(vec1, vec2):
     """Cosine similarity between two vectors"""
@@ -33,9 +28,8 @@ def similarity(vec1, vec2):
         return 0
     return np.dot(vec1, vec2) / (np.linalg.norm(vec1) * np.linalg.norm(vec2))
 
-
 # ----------------------------
-# Load AI model
+# Load model
 # ----------------------------
 @st.cache_resource
 def load_model():
@@ -43,19 +37,18 @@ def load_model():
 
 model = load_model()
 
-
 # ----------------------------
 # Streamlit UI
 # ----------------------------
-st.title("📁 File Similarity & Duplicate Detector")
+st.title("📁 File Similarity & Duplicate Manager")
 
-# Upload multiple files
+# Upload files
 uploaded_files = st.file_uploader(
     "Upload files to analyze",
     accept_multiple_files=True
 )
 
-# Wide, precise similarity threshold slider
+# Similarity threshold
 threshold = st.slider(
     "Similarity threshold (loose → strict)",
     min_value=0.0,
@@ -66,18 +59,15 @@ threshold = st.slider(
 )
 st.write(f"Current threshold: {threshold:.2f}")
 
-if uploaded_files:
-    st.subheader("Uploaded Files")
-    for file in uploaded_files:
-        st.write("📄", file.name)
-        # Optional preview of text
-        text_preview = get_text(file)
-        st.text_area(f"Preview of {file.name}", text_preview, height=150)
+# Initialize session state for decisions
+if "decisions" not in st.session_state:
+    st.session_state.decisions = {}
 
+if uploaded_files:
     texts = {}
     embeddings = {}
 
-    # Extract text and compute embeddings
+    # Extract text & embeddings
     for file in uploaded_files:
         text = get_text(file)
         texts[file.name] = text
@@ -85,11 +75,11 @@ if uploaded_files:
 
     st.subheader("Compare Files")
 
-    # Button triggers similarity comparison
+    # Button triggers comparison
     if st.button("Compare Files"):
         names = list(embeddings.keys())
-
         any_similar = False
+
         for i in range(len(names)):
             for j in range(i + 1, len(names)):
                 name1 = names[i]
@@ -102,10 +92,32 @@ if uploaded_files:
 
                 if score >= threshold:
                     any_similar = True
-                    st.write(f"📄 {name1}")
-                    st.write(f"📄 {name2}")
                     st.write(f"Similarity: {score:.2f}")
+                    col1, col2 = st.columns(2)
+
+                    with col1:
+                        st.write(f"📄 {name1}")
+                        st.text_area("Preview", texts[name1], height=150)
+                        if st.button(f"Keep {name1}", key=f"{name1}-{name2}-A"):
+                            st.session_state.decisions[(name1, name2)] = name1
+
+                    with col2:
+                        st.write(f"📄 {name2}")
+                        st.text_area("Preview", texts[name2], height=150)
+                        if st.button(f"Keep {name2}", key=f"{name1}-{name2}-B"):
+                            st.session_state.decisions[(name1, name2)] = name2
+
+                    # Ignore button
+                    if st.button(f"Ignore", key=f"{name1}-{name2}-Ignore"):
+                        st.session_state.decisions[(name1, name2)] = "Ignore"
+
                     st.write("---")
 
         if not any_similar:
             st.write("No similar files found above the threshold.")
+
+    # Show decisions
+    if st.session_state.decisions:
+        st.subheader("✅ Decisions so far")
+        for pair, decision in st.session_state.decisions.items():
+            st.write(f"{pair[0]} ⇄ {pair[1]} → {decision}")
