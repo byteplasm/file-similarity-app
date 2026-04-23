@@ -1,9 +1,19 @@
+# ----------------------------
+# Imports
+# ----------------------------
 import streamlit as st
-import os
-import hashlib
+import numpy as np
 from PyPDF2 import PdfReader
+from sentence_transformers import SentenceTransformer
+
+# ----------------------------
+# Functions
+# ----------------------------
 
 def get_text(file):
+    """
+    Extract text from uploaded PDF or TXT file.
+    """
     if file.name.endswith(".pdf"):
         reader = PdfReader(file)
         text = ""
@@ -15,149 +25,77 @@ def get_text(file):
         return file.read().decode("utf-8", errors="ignore")
 
     return ""
-from sentence_transformers import SentenceTransformer
-import numpy as np
-
-model = SentenceTransformer('all-MiniLM-L6-v2')
-from PyPDF2 import PdfReader
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
-
-# ----------------------------
-# FILE UTILITIES
-# ----------------------------
-
-def get_file_hash(file_path):
-    """Exact duplicate detection"""
-    hasher = hashlib.md5()
-    try:
-        with open(file_path, "rb") as f:
-            hasher.update(f.read())
-        return hasher.hexdigest()
-    except:
-        return None
 
 
-def extract_text(file_path):
-    """Extract text from txt and pdf files"""
-    try:
-        if file_path.endswith(".pdf"):
-            reader = PdfReader(file_path)
-            text = ""
-            for page in reader.pages:
-                text += page.extract_text() or ""
-            return text
-
-        elif file_path.endswith(".txt"):
-            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                return f.read()
-
-    except:
-        return ""
-
-    return ""
-
-
-def compare_files(file1, file2):
-    """Semantic similarity using TF-IDF"""
-    text1 = extract_text(file1)
-    text2 = extract_text(file2)
-
-    if not text1 or not text2:
+def similarity(vec1, vec2):
+    """Cosine similarity between two vectors"""
+    if vec1 is None or vec2 is None:
         return 0
-
-    try:
-        vectorizer = TfidfVectorizer()
-        vectors = vectorizer.fit_transform([text1, text2])
-        score = cosine_similarity(vectors[0], vectors[1])[0][0]
-        return score
-    except:
-        return 0
+    return np.dot(vec1, vec2) / (np.linalg.norm(vec1) * np.linalg.norm(vec2))
 
 
 # ----------------------------
-# SCAN FUNCTIONS
+# Load AI model
 # ----------------------------
+@st.cache_resource
+def load_model():
+    return SentenceTransformer('all-MiniLM-L6-v2')
 
-def scan_folder(folder_path):
-    files = []
-    hashes = {}
-    duplicates = []
-
-    for root, _, filenames in os.walk(folder_path):
-        for name in filenames:
-            path = os.path.join(root, name)
-            files.append(path)
-
-            file_hash = get_file_hash(path)
-            if file_hash:
-                if file_hash in hashes:
-                    duplicates.append((hashes[file_hash], path))
-                else:
-                    hashes[file_hash] = path
-
-    return files, duplicates
-
-
-def find_similar_files(files, threshold=0.75):
-    similar_pairs = []
-
-    for i in range(len(files)):
-        for j in range(i + 1, len(files)):
-            score = compare_files(files[i], files[j])
-
-            if score >= threshold:
-                similar_pairs.append((files[i], files[j], score))
-
-    return similar_pairs
+model = load_model()
 
 
 # ----------------------------
-# STREAMLIT UI
+# Streamlit UI
 # ----------------------------
 
 st.title("📁 File Similarity & Duplicate Detector")
 
+# Upload multiple files
 uploaded_files = st.file_uploader(
     "Upload files to analyze",
     accept_multiple_files=True
 )
+
+# Slider for similarity threshold
+threshold = st.slider("Similarity threshold", 0.5, 1.0, 0.75)
+
 if uploaded_files:
-    st.write("Files uploaded:")
+    st.subheader("Uploaded Files")
     for file in uploaded_files:
         st.write("📄", file.name)
 
-threshold = st.slider("Similarity threshold", 0.5, 1.0, 0.75)
+    texts = {}
+    embeddings = {}
 
-if st.button("Scan Folder"):
+    # Extract text and embeddings
+    for file in uploaded_files:
+        text = get_text(file)
+        texts[file.name] = text
+        embeddings[file.name] = model.encode(text)
 
-    if not os.path.exists(folder):
-        st.error("Folder does not exist!")
-    else:
-        with st.spinner("Scanning files..."):
+    st.subheader("Compare Files")
 
-            files, duplicates = scan_folder(folder)
-            similar = find_similar_files(files, threshold)
+    # Button triggers similarity comparison
+    if st.button("Compare Files"):
+        names = list(embeddings.keys())
 
-        # ---------------- DUPLICATES ----------------
-        st.subheader("🔴 Exact Duplicates")
+        any_similar = False
+        for i in range(len(names)):
+            for j in range(i + 1, len(names)):
+                name1 = names[i]
+                name2 = names[j]
 
-        if duplicates:
-            for a, b in duplicates:
-                st.write(f"📄 {a}")
-                st.write(f"📄 {b}")
-                st.write("---")
-        else:
-            st.write("No exact duplicates found.")
+                vec1 = embeddings[name1]
+                vec2 = embeddings[name2]
 
-        # ---------------- SIMILAR FILES ----------------
-        st.subheader("🟡 Similar Files")
+                score = similarity(vec1, vec2)
 
-        if similar:
-            for a, b, score in similar:
-                st.write(f"📄 {a}")
-                st.write(f"📄 {b}")
-                st.write(f"Similarity: {score:.2f}")
-                st.write("---")
-        else:
-            st.write("No similar files found.")
+                if score >= threshold:
+                    any_similar = True
+                    st.write(f"📄 {name1}")
+                    st.write(f"📄 {name2}")
+                    st.write(f"Similarity: {score:.2f}")
+                    st.write("---")
+
+        if not any_similar:
+            st.write("No similar files found above the threshold.")
