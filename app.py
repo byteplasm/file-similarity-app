@@ -100,7 +100,14 @@ def find_similar_files(files, threshold=0.75):
 
 st.title("📁 File Similarity & Duplicate Detector")
 
-folder = st.text_input("Enter folder path to scan:")
+uploaded_files = st.file_uploader(
+    "Upload files to analyze",
+    accept_multiple_files=True
+)
+if uploaded_files:
+    st.write("Files uploaded:")
+    for file in uploaded_files:
+        st.write("📄", file.name)
 
 threshold = st.slider("Similarity threshold", 0.5, 1.0, 0.75)
 
