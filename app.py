@@ -2,6 +2,24 @@ import streamlit as st
 import os
 import hashlib
 from PyPDF2 import PdfReader
+
+def get_text(file):
+    if file.name.endswith(".pdf"):
+        reader = PdfReader(file)
+        text = ""
+        for page in reader.pages:
+            text += page.extract_text() or ""
+        return text
+
+    elif file.name.endswith(".txt"):
+        return file.read().decode("utf-8", errors="ignore")
+
+    return ""
+from sentence_transformers import SentenceTransformer
+import numpy as np
+
+model = SentenceTransformer('all-MiniLM-L6-v2')
+from PyPDF2 import PdfReader
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
