@@ -1,10 +1,9 @@
-# ----------------------------
-# Imports
-# ----------------------------
 import streamlit as st
 import numpy as np
+import pandas as pd
 from PyPDF2 import PdfReader
 from sentence_transformers import SentenceTransformer
+import os
 
 # ----------------------------
 # Functions
@@ -28,6 +27,27 @@ def similarity(vec1, vec2):
         return 0
     return np.dot(vec1, vec2) / (np.linalg.norm(vec1) * np.linalg.norm(vec2))
 
+def group_similar_files(names, embeddings, threshold=0.5):
+    """Group files that are similar to each other"""
+    groups = []
+    visited = set()
+
+    for i in range(len(names)):
+        if names[i] in visited:
+            continue
+        group = [names[i]]
+        visited.add(names[i])
+        for j in range(i + 1, len(names)):
+            if names[j] in visited:
+                continue
+            score = similarity(embeddings[names[i]], embeddings[names[j]])
+            if score >= threshold:
+                group.append(names[j])
+                visited.add(names[j])
+        if len(group) > 1:
+            groups.append(group)
+    return groups
+
 # ----------------------------
 # Load model
 # ----------------------------
@@ -40,15 +60,13 @@ model = load_model()
 # ----------------------------
 # Streamlit UI
 # ----------------------------
-st.title("📁 File Similarity & Duplicate Manager")
+st.title("📁 File Similarity & Bulk Duplicate Manager with Export")
 
-# Upload files
 uploaded_files = st.file_uploader(
     "Upload files to analyze",
     accept_multiple_files=True
 )
 
-# Similarity threshold
 threshold = st.slider(
     "Similarity threshold (loose → strict)",
     min_value=0.0,
@@ -59,7 +77,7 @@ threshold = st.slider(
 )
 st.write(f"Current threshold: {threshold:.2f}")
 
-# Initialize session state for decisions
+# Session state for bulk decisions
 if "decisions" not in st.session_state:
     st.session_state.decisions = {}
 
@@ -73,51 +91,56 @@ if uploaded_files:
         texts[file.name] = text
         embeddings[file.name] = model.encode(text)
 
-    st.subheader("Compare Files")
+    st.subheader("Uploaded Files Preview")
+    for file in uploaded_files:
+        with st.expander(f"📄 {file.name} (click to show/hide preview)"):
+            st.text_area(f"Preview of {file.name}", texts[file.name], height=150)
 
-    # Button triggers comparison
-    if st.button("Compare Files"):
+    st.subheader("Bulk Similar File Groups")
+    if st.button("Find Similar Groups"):
         names = list(embeddings.keys())
-        any_similar = False
+        groups = group_similar_files(names, embeddings, threshold)
 
-        for i in range(len(names)):
-            for j in range(i + 1, len(names)):
-                name1 = names[i]
-                name2 = names[j]
+        if not groups:
+            st.write("No similar file groups found above the threshold.")
+        else:
+            for idx, group in enumerate(groups):
+                st.write(f"### Group {idx+1} (similar files)")
+                selected_keep = st.radio(
+                    f"Choose file to keep for Group {idx+1}",
+                    options=group + ["Keep All", "Ignore"],
+                    key=f"group-{idx}"
+                )
+                for name in group:
+                    with st.expander(f"📄 {name} (click to show/hide preview)"):
+                        st.text_area("Preview", texts[name], height=150)
+                st.session_state.decisions[f"group-{idx}"] = selected_keep
 
-                vec1 = embeddings[name1]
-                vec2 = embeddings[name2]
-
-                score = similarity(vec1, vec2)
-
-                if score >= threshold:
-                    any_similar = True
-                    st.write(f"Similarity: {score:.2f}")
-                    col1, col2 = st.columns(2)
-
-                    with col1:
-                        st.write(f"📄 {name1}")
-                        st.text_area("Preview", texts[name1], height=150)
-                        if st.button(f"Keep {name1}", key=f"{name1}-{name2}-A"):
-                            st.session_state.decisions[(name1, name2)] = name1
-
-                    with col2:
-                        st.write(f"📄 {name2}")
-                        st.text_area("Preview", texts[name2], height=150)
-                        if st.button(f"Keep {name2}", key=f"{name1}-{name2}-B"):
-                            st.session_state.decisions[(name1, name2)] = name2
-
-                    # Ignore button
-                    if st.button(f"Ignore", key=f"{name1}-{name2}-Ignore"):
-                        st.session_state.decisions[(name1, name2)] = "Ignore"
-
-                    st.write("---")
-
-        if not any_similar:
-            st.write("No similar files found above the threshold.")
-
+    # -----------------------
     # Show decisions
+    # -----------------------
     if st.session_state.decisions:
-        st.subheader("✅ Decisions so far")
-        for pair, decision in st.session_state.decisions.items():
-            st.write(f"{pair[0]} ⇄ {pair[1]} → {decision}")
+        st.subheader("✅ Bulk Decisions")
+        for group_id, decision in st.session_state.decisions.items():
+            st.write(f"{group_id} → {decision}")
+
+        # Export decisions
+        st.subheader("📥 Export Decisions")
+        if st.button("Download CSV of Decisions"):
+            df = pd.DataFrame([
+                {"Group": group_id, "Decision": decision}
+                for group_id, decision in st.session_state.decisions.items()
+            ])
+            csv = df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="Download CSV",
+                data=csv,
+                file_name="file_decisions.csv",
+                mime="text/csv"
+            )
+
+        # Optional: Local rename/move (only works if files are on local disk)
+        # Example placeholder (uncomment if running locally):
+        # for group_id, decision in st.session_state.decisions.items():
+        #     if decision not in ["Keep All", "Ignore"]:
+        #         # implement renaming/moving logic here
