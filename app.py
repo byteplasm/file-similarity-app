@@ -9,7 +9,6 @@ from sentence_transformers import SentenceTransformer
 # ----------------------------
 # Functions
 # ----------------------------
-
 def get_text(file):
     """
     Extract text from uploaded PDF or TXT file.
@@ -19,10 +18,11 @@ def get_text(file):
         text = ""
         for page in reader.pages:
             text += page.extract_text() or ""
-        return text
+        return " ".join(text.split())  # normalize whitespace
 
     elif file.name.endswith(".txt"):
-        return file.read().decode("utf-8", errors="ignore")
+        text = file.read().decode("utf-8", errors="ignore")
+        return " ".join(text.split())  # normalize whitespace
 
     return ""
 
@@ -47,7 +47,6 @@ model = load_model()
 # ----------------------------
 # Streamlit UI
 # ----------------------------
-
 st.title("📁 File Similarity & Duplicate Detector")
 
 # Upload multiple files
@@ -56,18 +55,29 @@ uploaded_files = st.file_uploader(
     accept_multiple_files=True
 )
 
-# Slider for similarity threshold
-threshold = st.slider("Similarity threshold", 0.5, 1.0, 0.75)
+# Wide, precise similarity threshold slider
+threshold = st.slider(
+    "Similarity threshold (loose → strict)",
+    min_value=0.0,
+    max_value=1.0,
+    value=0.5,
+    step=0.01,
+    help="Lower = more files considered similar, higher = only very similar files"
+)
+st.write(f"Current threshold: {threshold:.2f}")
 
 if uploaded_files:
     st.subheader("Uploaded Files")
     for file in uploaded_files:
         st.write("📄", file.name)
+        # Optional preview of text
+        text_preview = get_text(file)
+        st.text_area(f"Preview of {file.name}", text_preview, height=150)
 
     texts = {}
     embeddings = {}
 
-    # Extract text and embeddings
+    # Extract text and compute embeddings
     for file in uploaded_files:
         text = get_text(file)
         texts[file.name] = text
