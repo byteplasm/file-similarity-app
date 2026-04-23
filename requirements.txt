@@ -1,4 +1,6 @@
 streamlit
+numpy
+pandas
 PyPDF2
 sentence-transformers
-numpy
+scikit-learn
